@@ -159,3 +159,18 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 .lf-animate-in { animation: lf-fade-in 120ms ease-out; }
+
+/* Cursor-position sync highlight between the document and LaTeX editors */
+.lf-sync-line {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+.lf-sync-line-gutter {
+  border-left: 2px solid var(--color-accent);
+}
+.doc-editor .ProseMirror > .lf-sync-block {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
+  outline-offset: 2px;
+  border-radius: 4px;
+  transition: background 150ms ease-out;
+}

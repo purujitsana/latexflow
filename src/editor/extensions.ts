@@ -20,6 +20,7 @@ import { MathInline } from './extensions/MathInline'
 import { MathBlock } from './extensions/MathBlock'
 import { UnsupportedBlock } from './extensions/UnsupportedBlock'
 import { PageBreak } from './extensions/PageBreak'
+import { CursorSyncHighlight } from './extensions/CursorSyncHighlight'
 
 export function buildExtensions(): Extensions {
   return [
@@ -47,5 +48,6 @@ export function buildExtensions(): Extensions {
     MathBlock,
     UnsupportedBlock,
     PageBreak,
+    CursorSyncHighlight,
   ]
 }

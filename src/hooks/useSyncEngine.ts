@@ -3,7 +3,7 @@ import type { Editor, JSONContent } from '@tiptap/core'
 import { useDocumentStore } from '../state/documentStore'
 import { useSyncStore } from '../state/syncStore'
 import { useSettingsStore } from '../state/settingsStore'
-import { documentToLatex } from '../conversion/documentToLatex'
+import { documentToLatexWithRanges } from '../conversion/documentToLatex'
 import { parseLatexDocument } from '../conversion/latexParser'
 import { tiptapJsonToModel, modelToTiptapJson } from '../conversion/tiptapBridge'
 
@@ -22,6 +22,7 @@ export function useSyncEngine(editor: Editor | null) {
   const setStatus = useSyncStore((s) => s.setStatus)
   const setOrigin = useSyncStore((s) => s.setOrigin)
   const setDiagnostics = useSyncStore((s) => s.setDiagnostics)
+  const setLatexLineRanges = useSyncStore((s) => s.setLatexLineRanges)
   const debounceMs = useSettingsStore((s) => s.debounceMs)
 
   const suppressLatexRef = useRef(false)
@@ -51,7 +52,8 @@ export function useSyncEngine(editor: Editor | null) {
           const base = useDocumentStore.getState().model
           const nextModel = tiptapJsonToModel(json, base)
           useDocumentStore.getState().setModel(nextModel, { markDirty: true })
-          const latex = documentToLatex(nextModel, { fullDocument: true })
+          const { text: latex, ranges } = documentToLatexWithRanges(nextModel, { fullDocument: true })
+          setLatexLineRanges(ranges)
           suppressLatexRef.current = true
           useDocumentStore.getState().setLatexSource(latex, { markDirty: true })
           setStatus('synced')
@@ -60,7 +62,7 @@ export function useSyncEngine(editor: Editor | null) {
         }
       }, debounceMs)
     },
-    [mode, debounceMs, setOrigin, setStatus],
+    [mode, debounceMs, setOrigin, setStatus, setLatexLineRanges],
   )
 
   const handleLatexChange = useCallback(
@@ -81,8 +83,9 @@ export function useSyncEngine(editor: Editor | null) {
       if (latexTimer.current) clearTimeout(latexTimer.current)
       latexTimer.current = setTimeout(() => {
         try {
-          const { doc, diagnostics } = parseLatexDocument(source)
+          const { doc, diagnostics, ranges } = parseLatexDocument(source)
           setDiagnostics(diagnostics)
+          setLatexLineRanges(ranges)
           useDocumentStore.getState().setModel(doc, { markDirty: true })
           applyLatexToEditor(modelToTiptapJson(doc))
           setStatus(diagnostics.some((d) => d.severity === 'error') ? 'error' : 'synced')
@@ -91,7 +94,7 @@ export function useSyncEngine(editor: Editor | null) {
         }
       }, debounceMs)
     },
-    [mode, debounceMs, applyLatexToEditor, setOrigin, setStatus, setDiagnostics],
+    [mode, debounceMs, applyLatexToEditor, setOrigin, setStatus, setDiagnostics, setLatexLineRanges],
   )
 
   useEffect(

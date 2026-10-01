@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { documentToLatex } from '../documentToLatex'
+import { documentToLatex, documentToLatexWithRanges } from '../documentToLatex'
 import { parseLatexDocument } from '../latexParser'
 import { tiptapJsonToModel } from '../tiptapBridge'
 import { createEmptyDocument, type DocumentModel } from '../../types/document'
@@ -306,5 +306,56 @@ Real paragraph text survives.
     if (doc.content[0].kind === 'unsupported') {
       expect(doc.content[0].raw).toContain('customenv')
     }
+  })
+})
+
+describe('block <-> LaTeX line range tracking (for cursor-sync highlighting)', () => {
+  it('documentToLatexWithRanges reports the exact lines each block was written to', () => {
+    const doc = createEmptyDocument()
+    doc.content = [
+      { kind: 'heading', level: 1, content: [{ kind: 'text', text: 'Intro' }] },
+      { kind: 'paragraph', content: [{ kind: 'text', text: 'First paragraph.' }] },
+      { kind: 'paragraph', content: [{ kind: 'text', text: 'Second paragraph.' }] },
+    ]
+    const { text, ranges } = documentToLatexWithRanges(doc, { fullDocument: false })
+    expect(ranges).toHaveLength(3)
+    const lines = text.split('\n')
+    for (const r of ranges) {
+      const slice = lines.slice(r.start - 1, r.end).join('\n')
+      expect(slice.length).toBeGreaterThan(0)
+    }
+    expect(lines[ranges[0].start - 1]).toContain('Intro')
+    expect(lines[ranges[1].start - 1]).toContain('First paragraph')
+    expect(lines[ranges[2].start - 1]).toContain('Second paragraph')
+  })
+
+  it('documentToLatexWithRanges stays correct with a full preamble (multi-line package list)', () => {
+    const doc = createEmptyDocument()
+    doc.content = [
+      { kind: 'paragraph', content: [{ kind: 'text', text: 'Hello', marks: [{ type: 'highlight', attrs: { color: '#fff2a8' } }] }] },
+      { kind: 'heading', level: 2, content: [{ kind: 'text', text: 'Second Section' }] },
+    ]
+    const { text, ranges } = documentToLatexWithRanges(doc, { fullDocument: true })
+    const lines = text.split('\n')
+    expect(lines[ranges[0].start - 1]).toContain('colorbox')
+    expect(lines[ranges[1].start - 1]).toContain('Second Section')
+  })
+
+  it('parseLatexDocument reports matching line ranges for each parsed block', () => {
+    const source = [
+      '\\begin{document}',
+      '\\section{Alpha}',
+      'Some text here.',
+      '\\subsection{Beta}',
+      '\\end{document}',
+    ].join('\n')
+    const { doc, ranges } = parseLatexDocument(source)
+    expect(ranges).toHaveLength(doc.content.length)
+    const lines = source.split('\n')
+    doc.content.forEach((block, i) => {
+      if (block.kind !== 'heading') return
+      const text = block.content.map((n) => (n.kind === 'text' ? n.text : '')).join('')
+      expect(lines[ranges[i].start - 1]).toContain(text)
+    })
   })
 })

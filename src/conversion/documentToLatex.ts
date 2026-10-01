@@ -187,12 +187,43 @@ export function blockToLatex(block: BlockNode, indent = ''): string {
   }
 }
 
-export function documentToLatex(doc: DocumentModel, options: DocumentToLatexOptions = {}): string {
-  const body = doc.content.map((b) => blockToLatex(b)).join('\n\n')
-  if (!options.fullDocument) return body
+/** 1-indexed, inclusive source-line range a block occupies in generated LaTeX. */
+export interface BlockLineRange {
+  start: number
+  end: number
+}
+
+function rangesForBlocks(blockTexts: string[], startLine: number): BlockLineRange[] {
+  const ranges: BlockLineRange[] = []
+  let line = startLine
+  for (const t of blockTexts) {
+    const lineCount = t.split('\n').length
+    ranges.push({ start: line, end: line + lineCount - 1 })
+    line += lineCount + 1 // +1 for the blank-line separator before the next block
+  }
+  return ranges
+}
+
+/**
+ * Same output as `documentToLatex`, but also reports which source-line
+ * range each `doc.content[i]` block ended up occupying — used to highlight
+ * the corresponding LaTeX lines when the cursor moves in the document
+ * editor. Block ranges are computed from the exact same pieces used to
+ * build `text`, so they can never drift out of sync with what's displayed.
+ */
+export function documentToLatexWithRanges(
+  doc: DocumentModel,
+  options: DocumentToLatexOptions = {},
+): { text: string; ranges: BlockLineRange[] } {
+  const blockTexts = doc.content.map((b) => blockToLatex(b))
+
+  if (!options.fullDocument) {
+    return { text: blockTexts.join('\n\n'), ranges: rangesForBlocks(blockTexts, 1) }
+  }
 
   const { documentClass, documentClassOptions, packages, extra } = doc.preamble
   const opts = documentClassOptions ? `[${documentClassOptions}]` : ''
+  const body = blockTexts.join('\n\n')
   const requiredPackages = CONDITIONAL_PACKAGES.filter((c) => c.test.test(body)).map((c) => c.package)
   const allPackages = [...packages, ...requiredPackages.filter((p) => !packages.includes(p))]
   const pkgLines = allPackages.map((p) => `\\usepackage{${p}}`).join('\n')
@@ -202,7 +233,7 @@ export function documentToLatex(doc: DocumentModel, options: DocumentToLatexOpti
       }${doc.metadata.date ? `\\date{${escapeLatex(doc.metadata.date)}}\n` : ''}`
     : ''
 
-  return [
+  const prefixParts = [
     `\\documentclass${opts}{${documentClass}}`,
     '',
     pkgLines,
@@ -212,11 +243,19 @@ export function documentToLatex(doc: DocumentModel, options: DocumentToLatexOpti
     '\\begin{document}',
     '',
     titleBlock ? '\\maketitle\n' : '',
-    body,
-    '',
-    '\\end{document}',
-    '',
   ]
-    .filter((line, i, arr) => !(line === '' && arr[i - 1] === ''))
-    .join('\n')
+  const collapseBlank = (line: string, i: number, arr: string[]) => !(line === '' && arr[i - 1] === '')
+  const text = [...prefixParts, body, '', '\\end{document}', ''].filter(collapseBlank).join('\n')
+
+  // The collapse-filter only ever compares adjacent elements, so filtering
+  // the prefix alone yields exactly the same kept/dropped lines as filtering
+  // the full array — which tells us precisely which line `body` starts on.
+  const prefixLineCount = prefixParts.filter(collapseBlank).join('\n').split('\n').length
+  const ranges = rangesForBlocks(blockTexts, prefixLineCount + 1)
+
+  return { text, ranges }
+}
+
+export function documentToLatex(doc: DocumentModel, options: DocumentToLatexOptions = {}): string {
+  return documentToLatexWithRanges(doc, options).text
 }

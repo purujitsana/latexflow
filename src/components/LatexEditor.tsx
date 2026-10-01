@@ -4,6 +4,7 @@ import type { editor as MonacoEditorNS } from 'monaco-editor'
 import { registerLatexLanguage, LATEX_LANGUAGE_ID } from '../utils/latexLanguage'
 import { useSettingsStore } from '../state/settingsStore'
 import type { Diagnostic } from '../types/document'
+import type { BlockLineRange } from '../conversion/documentToLatex'
 
 export function LatexEditor({
   value,
@@ -13,6 +14,7 @@ export function LatexEditor({
   theme,
   onCursorLine,
   onEditorMount,
+  highlightRange,
 }: {
   value: string
   onChange: (value: string) => void
@@ -21,6 +23,9 @@ export function LatexEditor({
   theme: 'light' | 'dark'
   onCursorLine?: (line: number) => void
   onEditorMount?: (editor: MonacoEditorNS.IStandaloneCodeEditor) => void
+  /** Line range to softly highlight — set when the cursor moves in the
+   * document editor, to show where that content lives in the LaTeX source. */
+  highlightRange?: BlockLineRange | null
 }) {
   const editorRef = useRef<MonacoEditorNS.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<Monaco | null>(null)
@@ -66,6 +71,25 @@ export function LatexEditor({
       applyMarkers(monacoRef.current, editorRef.current, diagnostics)
     }
   }, [diagnostics])
+
+  // Soft line highlight driven by the document editor's cursor position.
+  const highlightDecorationIds = useRef<string[]>([])
+  useEffect(() => {
+    const ed = editorRef.current
+    const monaco = monacoRef.current
+    if (!ed || !monaco) return
+    if (!highlightRange) {
+      highlightDecorationIds.current = ed.deltaDecorations(highlightDecorationIds.current, [])
+      return
+    }
+    highlightDecorationIds.current = ed.deltaDecorations(highlightDecorationIds.current, [
+      {
+        range: new monaco.Range(highlightRange.start, 1, highlightRange.end, 1),
+        options: { isWholeLine: true, className: 'lf-sync-line', linesDecorationsClassName: 'lf-sync-line-gutter' },
+      },
+    ])
+    ed.revealLineInCenterIfOutsideViewport(highlightRange.start)
+  }, [highlightRange])
 
   return (
     <div className="h-full w-full">

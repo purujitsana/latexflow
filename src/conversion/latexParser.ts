@@ -10,10 +10,15 @@ import type {
 import { createEmptyDocument, DEFAULT_PREAMBLE } from '../types/document'
 import { unescapeLatex } from './escapeLatex'
 import { parseLatexColorArg } from './latexColor'
+import type { BlockLineRange } from './documentToLatex'
 
 export interface ParseResult {
   doc: DocumentModel
   diagnostics: Diagnostic[]
+  /** 1-indexed, inclusive source-line range each `doc.content[i]` came
+   * from, used to highlight the matching LaTeX lines when the cursor moves
+   * in the document editor. Same length and order as `doc.content`. */
+  ranges: BlockLineRange[]
 }
 
 // -------------------------------------------------------------------------
@@ -717,6 +722,7 @@ export function parseBlock(raw: RawBlock, diagnostics: Diagnostic[]): BlockNode 
 export function parseLatexDocument(source: string): ParseResult {
   const diagnostics: Diagnostic[] = []
   const doc = createEmptyDocument()
+  let ranges: BlockLineRange[] = [{ start: 1, end: 1 }]
 
   try {
     const classMatch = /\\documentclass(?:\[([^\]]*)\])?\{([^}]*)\}/.exec(source)
@@ -737,14 +743,29 @@ export function parseLatexDocument(source: string): ParseResult {
 
     const docSpan = findEnvSpan(source, 'document')
     const body = docSpan ? docSpan.inner : source
-    const bodyLineOffset = docSpan ? source.slice(0, source.indexOf(docSpan.inner)).split('\n').length - 1 : 0
+    const bodyStartAbsLine = docSpan ? source.slice(0, source.indexOf(body)).split('\n').length - 1 : 0
 
-    const cleanedBody = body.replace(/\\maketitle/g, '').trim()
+    const rawCleanedBody = body.replace(/\\maketitle/g, '')
+    // `.trim()` below drops leading blank lines (typically just the newline
+    // right after \begin{document}) — count how many so line numbers stay
+    // anchored to the actual source file, not to cleanedBody's own line 0.
+    const leadingNewlines = (/^\s*/.exec(rawCleanedBody)?.[0].match(/\n/g) ?? []).length
+    const bodyLineOffset = bodyStartAbsLine + leadingNewlines
+
+    const cleanedBody = rawCleanedBody.trim()
     const rawBlocks = splitIntoBlocks(cleanedBody)
-    const content = rawBlocks
-      .map((b) => parseBlock({ text: b.text, startLine: b.startLine + bodyLineOffset }, diagnostics))
-      .filter((b) => !isEmptyNoopParagraph(b))
-    doc.content = content.length ? content : [{ kind: 'paragraph', content: [] }]
+    const parsed = rawBlocks
+      .map((b) => {
+        const startLine = b.startLine + bodyLineOffset
+        return {
+          block: parseBlock({ text: b.text, startLine }, diagnostics),
+          range: { start: startLine + 1, end: startLine + b.text.split('\n').length } as BlockLineRange,
+        }
+      })
+      .filter((p) => !isEmptyNoopParagraph(p.block))
+
+    doc.content = parsed.length ? parsed.map((p) => p.block) : [{ kind: 'paragraph', content: [] }]
+    ranges = parsed.length ? parsed.map((p) => p.range) : [{ start: 1, end: source.split('\n').length }]
   } catch (err) {
     diagnostics.push({
       line: 1,
@@ -752,8 +773,9 @@ export function parseLatexDocument(source: string): ParseResult {
       severity: 'error',
     })
     doc.content = [{ kind: 'unsupported', raw: source, reason: 'Top-level parse failure' }]
+    ranges = [{ start: 1, end: source.split('\n').length }]
   }
 
   doc.metadata.updatedAt = new Date().toISOString()
-  return { doc, diagnostics }
+  return { doc, diagnostics, ranges }
 }

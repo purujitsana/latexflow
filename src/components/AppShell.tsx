@@ -9,9 +9,11 @@ import { useSyncStore } from '../state/syncStore'
 import { useSettingsStore } from '../state/settingsStore'
 import { useUiStore } from '../state/uiStore'
 import { useSyncEngine } from '../hooks/useSyncEngine'
+import { useCursorSync } from '../hooks/useCursorSync'
 import { useAutosave } from '../hooks/useAutosave'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 import { useDocumentActions } from '../hooks/useDocumentActions'
+import { useIsDesktop } from '../hooks/useIsDesktop'
 import { registerCommands } from '../editor/commands'
 import { exportTex, exportMarkdown, exportHtml, exportPlainText } from '../utils/exportUtils'
 
@@ -53,6 +55,7 @@ export function AppShell() {
 
   const mode = useSyncStore((s) => s.mode)
   const diagnostics = useSyncStore((s) => s.diagnostics)
+  const latexLineRanges = useSyncStore((s) => s.latexLineRanges)
   const model = useDocumentStore((s) => s.model)
   const latexSource = useDocumentStore((s) => s.latexSource)
   const theme = useSettingsStore((s) => s.theme)
@@ -61,6 +64,7 @@ export function AppShell() {
   const previewOpen = useUiStore((s) => s.previewOpen)
   const mobileTab = useUiStore((s) => s.mobileTab)
   const setMobileTab = useUiStore((s) => s.setMobileTab)
+  const isDesktop = useIsDesktop()
 
   const editor = useEditor({
     extensions: buildExtensions(),
@@ -70,6 +74,7 @@ export function AppShell() {
   })
 
   const { handleDocChange, handleLatexChange } = useSyncEngine(editor)
+  const { latexHighlight, handleLatexCursorLine } = useCursorSync(editor, latexLineRanges)
   // onUpdate is bound once at editor creation, but the handler identity can
   // change across renders (debounce/mode deps) — route through a ref so the
   // editor always calls the latest version without needing to be recreated.
@@ -148,7 +153,8 @@ export function AppShell() {
         readOnly={mode === 'doc2latex'}
         diagnostics={diagnostics}
         theme={theme}
-        onCursorLine={() => {}}
+        onCursorLine={handleLatexCursorLine}
+        highlightRange={latexHighlight}
         onEditorMount={(ed) => {
           monacoEditorRef.current = ed
         }}
@@ -164,6 +170,31 @@ export function AppShell() {
       <ResizableSplit direction={layout === 'stacked' ? 'vertical' : 'horizontal'} first={docPane} second={latexPane} />
     )
     return previewOpen ? <ResizableSplit direction="horizontal" first={mainSplit} second={previewPane} initialRatio={0.66} /> : mainSplit
+  }
+
+  function renderMobileLayout() {
+    return (
+      <div className="flex-1 min-w-0 flex flex-col">
+        <div className="flex border-b border-[var(--color-border)]">
+          {MOBILE_TABS.map((t) => (
+            <button
+              key={t.id}
+              className={`flex-1 py-2 text-xs font-medium ${
+                mobileTab === t.id ? 'text-[var(--color-accent)] border-b-2 border-[var(--color-accent)]' : 'text-[var(--color-text-muted)]'
+              }`}
+              onClick={() => setMobileTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex-1 min-h-0">
+          {mobileTab === 'document' && docPane}
+          {mobileTab === 'latex' && latexPane}
+          {mobileTab === 'preview' && previewPane}
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -182,28 +213,12 @@ export function AppShell() {
       <div className="flex-1 flex min-h-0">
         <FileSidebar editor={editor} />
 
-        <div className="flex-1 min-w-0 relative hidden md:block">{renderDesktopLayout()}</div>
-
-        <div className="flex-1 min-w-0 flex flex-col md:hidden">
-          <div className="flex border-b border-[var(--color-border)]">
-            {MOBILE_TABS.map((t) => (
-              <button
-                key={t.id}
-                className={`flex-1 py-2 text-xs font-medium ${
-                  mobileTab === t.id ? 'text-[var(--color-accent)] border-b-2 border-[var(--color-accent)]' : 'text-[var(--color-text-muted)]'
-                }`}
-                onClick={() => setMobileTab(t.id)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-          <div className="flex-1 min-h-0">
-            {mobileTab === 'document' && docPane}
-            {mobileTab === 'latex' && latexPane}
-            {mobileTab === 'preview' && previewPane}
-          </div>
-        </div>
+        {/* Exactly one of these mounts at a time (JS-decided, not CSS-hidden) —
+            docPane/latexPane each wrap the one shared editor instance, and
+            ProseMirror doesn't support that editor having two simultaneous
+            DOM mounts (editor.view.nodeDOM, used by the cursor-sync
+            highlight, would resolve against whichever mounted second). */}
+        {isDesktop ? <div className="flex-1 min-w-0 relative">{renderDesktopLayout()}</div> : renderMobileLayout()}
 
         <Diagnostics onJump={(line) => jumpMonacoToLine(monacoEditorRef.current, line)} />
       </div>
