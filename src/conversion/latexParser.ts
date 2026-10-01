@@ -67,6 +67,96 @@ function mergeMark(node: InlineNode, mark: Mark): InlineNode {
   return { ...node, marks: [...(node.marks ?? []), mark] }
 }
 
+// A chunk that parsed to a paragraph with zero inline nodes only happens
+// when its entire raw text was noop commands (\phantomsection,
+// \addcontentsline{...}, bare \appendix, ...) — splitIntoBlocks never emits
+// a chunk from blank lines alone, so this can't be a real blank paragraph
+// the user wrote. Safe to drop rather than leaving empty clutter behind.
+function isEmptyNoopParagraph(block: BlockNode): boolean {
+  return block.kind === 'paragraph' && block.content.length === 0
+}
+
+// Commands that produce no visible text of their own (structural/typographic
+// no-ops for our purposes — page numbering, TOC markers, spacing, layout
+// declarations). Consumed and dropped so they don't leak as literal
+// "\tableofcontents"-style text into the rendered document.
+const NOOP_COMMANDS = new Set([
+  'phantomsection',
+  'tableofcontents',
+  'listoffigures',
+  'listoftables',
+  'appendix',
+  'maketitle',
+  'centering',
+  'raggedright',
+  'raggedleft',
+  'noindent',
+  'clearpage',
+  'newpage',
+  'pagebreak',
+  'par',
+  'small',
+  'large',
+  'Large',
+  'LARGE',
+  'huge',
+  'Huge',
+  'normalsize',
+  'bfseries',
+  'itshape',
+  'medskip',
+  'smallskip',
+  'bigskip',
+])
+
+// Same idea, but the command also takes a fixed number of brace-group
+// arguments that must be consumed (and discarded) along with it, e.g.
+// \addcontentsline{toc}{section}{Abstract} or \pagenumbering{roman}.
+const NOOP_COMMANDS_WITH_ARGS: Record<string, number> = {
+  addcontentsline: 3,
+  pagenumbering: 1,
+  hypersetup: 1,
+  setcounter: 2,
+  renewcommand: 2,
+  newcommand: 2,
+  setstretch: 1,
+  setlength: 2,
+  vspace: 1,
+  hspace: 1,
+  linespread: 1,
+  definecolor: 3,
+  label: 1,
+}
+
+/** Consumes `count` leading `{...}` argument groups (tolerating an optional
+ * `[...]` option before any of them) starting at `cursor`. Returns the index
+ * just past the last consumed group, or null if the expected braces aren't there. */
+function consumeBraceArgs(text: string, cursor: number, count: number): number | null {
+  let i = cursor
+  for (let k = 0; k < count; k++) {
+    i = skipWhitespace(text, i)
+    if (text[i] === '[') {
+      const close = text.indexOf(']', i)
+      if (close === -1) return null
+      i = skipWhitespace(text, close + 1)
+    }
+    if (text[i] !== '{') return null
+    const arg = extractBraced(text, i)
+    if (!arg) return null
+    i = arg.endIndex + 1
+  }
+  return i
+}
+
+/** Like `consumeBraceArgs`, but returns the text with the leading groups
+ * removed rather than just an index — used to strip column-spec arguments
+ * (e.g. the `{ll}` in `\begin{tabular}{ll}`) from an environment's `.inner`
+ * before it's treated as row content. */
+function stripLeadingBraceArgs(text: string, count: number): string {
+  const end = consumeBraceArgs(text, 0, count)
+  return end === null ? text : text.slice(end)
+}
+
 export function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = []
   let buffer = ''
@@ -109,12 +199,29 @@ export function parseInline(text: string): InlineNode[] {
         i += 2
         continue
       }
-      // Command name
-      const match = /^\\([a-zA-Z]+)/.exec(text.slice(i))
+      // Command name (optionally starred, e.g. \vspace*{1cm})
+      const match = /^\\([a-zA-Z]+)(\*)?/.exec(text.slice(i))
       if (match) {
         const name = match[1]
-        let cursor = i + match[0].length
-        cursor = skipWhitespace(text, cursor)
+        const bareEnd = i + match[0].length
+        let cursor = skipWhitespace(text, bareEnd)
+
+        if (NOOP_COMMANDS.has(name)) {
+          // Chunks are only ever split on blank lines (never single ones),
+          // so eating one trailing newline here can't accidentally merge
+          // into a different paragraph — it just stops a run of noop
+          // commands on consecutive lines from leaving literal blank lines
+          // behind in the resulting text.
+          i = text[bareEnd] === '\n' ? bareEnd + 1 : bareEnd
+          continue
+        }
+        if (name in NOOP_COMMANDS_WITH_ARGS) {
+          const end = consumeBraceArgs(text, cursor, NOOP_COMMANDS_WITH_ARGS[name])
+          if (end !== null) {
+            i = text[end] === '\n' ? end + 1 : end
+            continue
+          }
+        }
 
         if (name === 'href') {
           const arg1 = text[cursor] === '{' ? extractBraced(text, cursor) : null
@@ -187,15 +294,48 @@ export function parseInline(text: string): InlineNode[] {
 }
 
 // -------------------------------------------------------------------------
-// Block splitting: walk line-by-line, keeping `\begin{}...\end{}` and
-// `\[...\]` spans intact as one chunk regardless of blank lines inside them.
+// Block splitting.
+//
+// This does NOT just split on blank lines. Real hand-written LaTeX (as
+// opposed to our own generator's output) routinely packs \section,
+// \subsection, \begin{table}, etc. back-to-back on consecutive lines with
+// no blank line between them at all — blank lines only separate prose
+// paragraphs, not structural commands. A purely blank-line-based splitter
+// merges an entire section (heading + every table in it) into one opaque
+// chunk, which then fails every block-type check and quietly loses that
+// content instead of rendering it.
+//
+// So a line starting a new structural construct (heading, \begin{...},
+// \[, or a bare hrule/pagebreak command) always starts its own chunk, even
+// without a blank line before it; `\end{...}` closing back to depth 0, or a
+// self-contained single-line construct, closes a chunk immediately after.
+// Blank lines still separate ordinary prose paragraphs as before.
 // -------------------------------------------------------------------------
 interface RawBlock {
   text: string
   startLine: number
 }
 
-function splitIntoBlocks(body: string): RawBlock[] {
+const HEADING_START_RE = /^\\(section|subsection|subsubsection|paragraph)\*?\s*\{/
+const BARE_COMMAND_RE = /^\\(hrulefill|newpage|pagebreak|clearpage)\b/
+const BLOCK_START_RE = new RegExp(
+  `^(${HEADING_START_RE.source}|\\\\begin\\{[a-zA-Z*]+\\}|\\\\\\[|${BARE_COMMAND_RE.source})`,
+)
+
+function isBraceBalanced(s: string): boolean {
+  let depth = 0
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\') {
+      i++
+      continue
+    }
+    if (s[i] === '{') depth++
+    else if (s[i] === '}') depth--
+  }
+  return depth <= 0
+}
+
+export function splitIntoBlocks(body: string): RawBlock[] {
   const lines = body.split('\n')
   const blocks: RawBlock[] = []
   let current: string[] = []
@@ -209,25 +349,38 @@ function splitIntoBlocks(body: string): RawBlock[] {
     current = []
   }
 
-  lines.forEach((line, idx) => {
-    const beginMatches = line.match(/\\begin\{[^}]+\}/g) ?? []
-    const endMatches = line.match(/\\end\{[^}]+\}/g) ?? []
+  for (let idx = 0; idx < lines.length; idx++) {
+    const line = lines[idx]
     const trimmed = line.trim()
 
-    if (current.length === 0) currentStart = idx
-
-    if (envDepth === 0 && !inDisplayMath && trimmed === '' ) {
-      flush()
-      return
+    if (envDepth === 0 && !inDisplayMath) {
+      if (trimmed === '') {
+        flush()
+        continue
+      }
+      if (current.length > 0 && BLOCK_START_RE.test(trimmed)) {
+        flush()
+      }
     }
 
+    if (current.length === 0) currentStart = idx
     current.push(line)
-    envDepth += beginMatches.length - endMatches.length
+
+    const begins = trimmed.match(/\\begin\{[a-zA-Z*]+\}/g) ?? []
+    const ends = trimmed.match(/\\end\{[a-zA-Z*]+\}/g) ?? []
+    envDepth += begins.length - ends.length
     if (envDepth < 0) envDepth = 0
 
     if (trimmed === '\\[') inDisplayMath = true
     else if (trimmed === '\\]') inDisplayMath = false
-  })
+
+    if (envDepth === 0 && !inDisplayMath) {
+      const closedEnv = ends.length > 0
+      const isHeading = HEADING_START_RE.test(current[0].trim()) && isBraceBalanced(current.join('\n'))
+      const isBareCommand = current.length === 1 && BARE_COMMAND_RE.test(current[0].trim())
+      if (closedEnv || isHeading || isBareCommand) flush()
+    }
+  }
   flush()
   return blocks
 }
@@ -338,22 +491,65 @@ const HEADING_COMMANDS: Record<string, 1 | 2 | 3 | 4> = {
   paragraph: 4,
 }
 
+// `tabular{spec}` has one leading brace argument (the column spec) before
+// row content starts; `tabularx{width}{spec}` has two (width, then spec);
+// `longtable{spec}` has one, same as tabular. Skipping the wrong number
+// leaves the spec's own text (e.g. "{ll}") glued onto the first cell.
+const TABLE_GRID_ENVS: { name: string; argsToStrip: number }[] = [
+  { name: 'tabular', argsToStrip: 1 },
+  { name: 'tabularx', argsToStrip: 2 },
+  { name: 'longtable', argsToStrip: 1 },
+]
+
+function findTableGrid(text: string): { inner: string; argsToStrip: number } | null {
+  for (const { name, argsToStrip } of TABLE_GRID_ENVS) {
+    const span = findEnvSpan(text, name)
+    if (span) return { inner: span.inner, argsToStrip }
+  }
+  return null
+}
+
+// longtable repeats its header between \endfirsthead/\endhead (and
+// optionally a footer between \endfoot/\endlastfoot) for multi-page
+// breaks; neither is a real data row, so collapse to a single header
+// copy followed by the actual body rows.
+function resolveLongtableSections(body: string): string {
+  const endHeadIdx = body.indexOf('\\endhead')
+  if (endHeadIdx === -1) return body
+  const firstHeadIdx = body.indexOf('\\endfirsthead')
+  const headerSegment = firstHeadIdx !== -1 ? body.slice(firstHeadIdx + '\\endfirsthead'.length, endHeadIdx) : ''
+  let dataSegment = body.slice(endHeadIdx + '\\endhead'.length)
+  const footIdx = dataSegment.search(/\\endfoot|\\endlastfoot/)
+  if (footIdx !== -1) dataSegment = dataSegment.slice(0, footIdx)
+  return `${headerSegment}\n${dataSegment}`
+}
+
+// Strips row-decoration commands (booktabs rules, per-row background color)
+// that aren't cell content, so they don't leak into a cell's text.
+function cleanRowLine(line: string): string {
+  return line.replace(/\\(hline|toprule|midrule|bottomrule)\b/g, '').replace(/\\rowcolor\{[^}]*\}/g, '')
+}
+
 function parseTable(inner: string): BlockNode {
-  const tabular = findEnvSpan(inner, 'tabular')
   const captionMatch = /\\caption\{([\s\S]*?)\}/.exec(inner)
   const caption = captionMatch ? unescapeLatex(captionMatch[1]) : undefined
-  if (!tabular) return { kind: 'table', rows: [], caption }
 
-  const rowLines = tabular.inner
+  const grid = findTableGrid(inner)
+  if (!grid) return { kind: 'table', rows: [], caption }
+
+  let body = stripLeadingBraceArgs(grid.inner, grid.argsToStrip)
+  body = resolveLongtableSections(body)
+  // longtable keeps \caption/\label inside the grid itself (tabular/tabularx
+  // never do); strip them here so they don't surface as a stray row.
+  body = body.replace(/\\caption\{[\s\S]*?\}/g, '').replace(/\\label\{[^}]*\}/g, '')
+
+  const rowLines = body
     .split('\\\\')
-    .map((r) => r.trim())
-    .filter((r) => r && !/^\\hline$/.test(r))
+    .map((r) => cleanRowLine(r).trim())
+    .filter((r) => r.length > 0)
 
   const rows: TableRowNode[] = rowLines.map((line, rowIdx) => {
-    const cells = line
-      .replace(/\\hline/g, '')
-      .split('&')
-      .map((c) => c.trim())
+    const cells = line.split('&').map((c) => c.trim())
     return {
       cells: cells.map((c) => ({
         content: [{ kind: 'paragraph', content: parseInline(c) }],
@@ -373,6 +569,22 @@ function parseFigure(inner: string): BlockNode {
     src: srcMatch?.[1] ?? '',
     caption: captionMatch ? unescapeLatex(captionMatch[1]) : undefined,
     width: widthMatch ? parseFloat(widthMatch[1]) : undefined,
+  }
+}
+
+// \begin{thebibliography}{99} ... \bibitem{key} text ... \end{thebibliography}
+// has no real document-model equivalent, so it's mapped to an ordered list —
+// close enough semantically (a numbered reference list) without inventing a
+// new block type for a single construct.
+function parseBibliography(inner: string): BlockNode {
+  const body = stripLeadingBraceArgs(inner, 1)
+  const entries = body
+    .split(/\\bibitem(?:\[[^\]]*\])?\{[^}]*\}/)
+    .map((e) => e.trim())
+    .filter(Boolean)
+  return {
+    kind: 'orderedList',
+    items: entries.map((e) => ({ content: [{ kind: 'paragraph', content: parseInline(e) }] })),
   }
 }
 
@@ -409,7 +621,9 @@ export function parseBlock(raw: RawBlock, diagnostics: Diagnostic[]): BlockNode 
     if (/^\\begin\{quote\}/.test(text)) {
       const span = findEnvSpan(text, 'quote')
       if (span) {
-        const inner = splitIntoBlocks(span.inner).map((b) => parseBlock(b, diagnostics))
+        const inner = splitIntoBlocks(span.inner)
+          .map((b) => parseBlock(b, diagnostics))
+          .filter((b) => !isEmptyNoopParagraph(b))
         return { kind: 'quote', content: inner }
       }
     }
@@ -429,9 +643,21 @@ export function parseBlock(raw: RawBlock, diagnostics: Diagnostic[]): BlockNode 
       if (span) return parseTable(span.inner)
     }
 
+    // tabular/tabularx/longtable can also appear without a \begin{table}
+    // wrapper (common for appendix link lists, summary grids, etc.).
+    // parseTable searches `text` itself for whichever grid env is present.
+    if (/^\\begin\{(tabular|tabularx|longtable)\}/.test(text)) {
+      return parseTable(text)
+    }
+
     if (/^\\begin\{figure\}/.test(text)) {
       const span = findEnvSpan(text, 'figure')
       if (span) return parseFigure(span.inner)
+    }
+
+    if (/^\\begin\{thebibliography\}/.test(text)) {
+      const span = findEnvSpan(text, 'thebibliography')
+      if (span) return parseBibliography(span.inner)
     }
 
     if (text.startsWith('\\[') && text.endsWith('\\]')) {
@@ -515,9 +741,9 @@ export function parseLatexDocument(source: string): ParseResult {
 
     const cleanedBody = body.replace(/\\maketitle/g, '').trim()
     const rawBlocks = splitIntoBlocks(cleanedBody)
-    const content = rawBlocks.map((b) =>
-      parseBlock({ text: b.text, startLine: b.startLine + bodyLineOffset }, diagnostics),
-    )
+    const content = rawBlocks
+      .map((b) => parseBlock({ text: b.text, startLine: b.startLine + bodyLineOffset }, diagnostics))
+      .filter((b) => !isEmptyNoopParagraph(b))
     doc.content = content.length ? content : [{ kind: 'paragraph', content: [] }]
   } catch (err) {
     diagnostics.push({

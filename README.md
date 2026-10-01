@@ -94,11 +94,31 @@ hand-written LaTeX using this subset:
 \begin{verbatim} \begin{lstlisting}
 \[ ... \]   \( ... \)   $...$
 \begin{equation} \begin{align} \begin{gather}  (with \label)
-\begin{table} \begin{tabular} \caption \hline
+\begin{table} \begin{tabular} \begin{tabularx} \begin{longtable}
+    \caption \hline \toprule \midrule \bottomrule \rowcolor{...}
+    (tabularx/longtable work both wrapped in \begin{table} and bare;
+    longtable's \endfirsthead/\endhead repeated-header markers are
+    resolved to a single header row)
 \begin{figure} \includegraphics \caption
+\begin{thebibliography} \bibitem  (mapped to a numbered reference list)
 \hrulefill   \newpage \pagebreak \clearpage
 \documentclass \usepackage \title \author \maketitle
 ```
+
+Structural/typographic commands with no visible output of their own —
+`\phantomsection`, `\addcontentsline`, `\tableofcontents`, `\listoffigures`,
+`\listoftables`, `\appendix`, `\pagenumbering`, `\hypersetup`, `\setcounter`,
+`\(re)newcommand`, `\setstretch`, `\setlength`, `\vspace`, `\hspace`, bare
+font-size/alignment declarations (`\centering`, `\small`, `\Large`, ...) —
+are recognized and dropped rather than leaking into the document as literal
+text. Custom macros you've defined yourself (e.g. a `\placeholder{...}`
+helper) aren't expanded — since we don't execute your preamble — but their
+arguments are preserved as visible literal text, never silently discarded.
+
+Block splitting isn't blank-line-based: hand-written LaTeX routinely packs
+`\section`, `\subsection`, and `\begin{table}` back-to-back with no blank
+lines between them at all, so each is still recognized as its own block
+rather than being swallowed into one opaque chunk with everything after it.
 
 `\usepackage{xcolor}` (for `\textcolor`/`\colorbox`) and `\usepackage{ulem}`
 (for `\sout`) are injected into the exported preamble automatically whenever
@@ -115,10 +135,15 @@ than styled specially.
 
 ## Limitations
 
-- Footnotes, citations (`\cite`), cross-references (`\ref`/`\label` outside
-  equations), and bibliographies are not modeled as first-class document
-  nodes — they pass through as literal text or an unsupported block, not a
-  dedicated UI element.
+- Footnotes, citations (`\cite`), and cross-references (`\ref`/`\label`
+  outside equations) are not modeled as first-class document nodes — they
+  pass through as literal text, not a dedicated UI element.
+  `\begin{thebibliography}` is the one exception: it's mapped to a numbered
+  list since that's a reasonably close semantic match.
+- `\multicolumn{n}{spec}{content}` table cells aren't given real colspan —
+  the cell's content (including any formatting inside it) is preserved, but
+  it renders as one normal cell with the `\multicolumn{...}{...}{` wrapper
+  visible as literal text rather than actually spanning columns.
 - The Markdown importer/exporter covers headings, bold/italic, lists, code
   fences, blockquotes, `$$`/`$` math, and tables — not full CommonMark.
 - PDF export is the browser's print dialog, not a real LaTeX compile. Full

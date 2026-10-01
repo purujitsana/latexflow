@@ -9,6 +9,12 @@ function docLatexDoc(doc: DocumentModel): DocumentModel {
   return parseLatexDocument(latex).doc
 }
 
+function cellText(cell: { content: DocumentModel['content'] }): string {
+  return cell.content
+    .map((b) => (b.kind === 'paragraph' ? b.content.map((n) => (n.kind === 'text' ? n.text : '')).join('') : ''))
+    .join('')
+}
+
 function plainText(model: DocumentModel): string {
   return model.content
     .map((b) => {
@@ -132,8 +138,84 @@ describe('document -> latex -> document round trip', () => {
     expect(back.content[0].kind).toBe('table')
     if (back.content[0].kind === 'table') {
       expect(back.content[0].rows).toHaveLength(2)
-      expect(back.content[0].rows[1].cells[0].content[0]).toMatchObject({ kind: 'paragraph' })
+      // Regression: the generator's own `{ll}` column spec used to leak into
+      // the first cell's text (e.g. "{ll}\nParameter") because the parser
+      // never skipped \begin{tabular}'s column-spec argument.
+      expect(cellText(back.content[0].rows[0].cells[0])).toBe('Parameter')
+      expect(cellText(back.content[0].rows[0].cells[1])).toBe('Value')
+      expect(cellText(back.content[0].rows[1].cells[0])).toBe('Heart Rate')
+      expect(cellText(back.content[0].rows[1].cells[1])).toBe('72')
     }
+  })
+
+  it('parses tabularx tables (not just plain tabular)', () => {
+    const latex = String.raw`
+\begin{table}[htbp]\centering\small
+\caption{Comparison of existing solutions}\label{tab:literature}
+\begin{tabularx}{\textwidth}{|Y|Y|Y|Y|}
+\hline\rowcolor{lightaccent}\textbf{Source} & \textbf{Performance} & \textbf{Limitation} & \textbf{Implication} \\ \hline
+Device A & Fast & Expensive & Reduce cost \\ \hline
+\end{tabularx}\end{table}
+`
+    const { doc } = parseLatexDocument(latex)
+    expect(doc.content[0].kind).toBe('table')
+    if (doc.content[0].kind === 'table') {
+      expect(doc.content[0].caption).toBe('Comparison of existing solutions')
+      expect(doc.content[0].rows).toHaveLength(2)
+      expect(cellText(doc.content[0].rows[0].cells[0])).toBe('Source')
+      expect(cellText(doc.content[0].rows[1].cells[0])).toBe('Device A')
+      expect(cellText(doc.content[0].rows[1].cells[2])).toBe('Expensive')
+    }
+  })
+
+  it('parses longtable tables with repeated-header markers', () => {
+    const latex = String.raw`
+\begin{longtable}{|L{0.42\textwidth}|L{0.49\textwidth}|}
+\caption{Supporting project deliverables}\label{tab:links}\\
+\hline\rowcolor{lightaccent}\textbf{Deliverable} & \textbf{URL / Access Status} \\ \hline
+\endfirsthead
+\hline\rowcolor{lightaccent}\textbf{Deliverable} & \textbf{URL / Access Status} \\ \hline
+\endhead
+IS-0 Project Proposal Approval & Pending \\ \hline
+Final Demonstration Video & Uploaded \\ \hline
+\end{longtable}
+`
+    const { doc } = parseLatexDocument(latex)
+    expect(doc.content[0].kind).toBe('table')
+    if (doc.content[0].kind === 'table') {
+      expect(doc.content[0].rows).toHaveLength(3)
+      expect(cellText(doc.content[0].rows[0].cells[0])).toBe('Deliverable')
+      expect(cellText(doc.content[0].rows[1].cells[0])).toBe('IS-0 Project Proposal Approval')
+      expect(cellText(doc.content[0].rows[2].cells[1])).toBe('Uploaded')
+    }
+  })
+
+  it('parses \\begin{thebibliography} as a numbered reference list', () => {
+    const latex = String.raw`
+\begin{thebibliography}{99}
+\bibitem{smith2020} J. Smith, "A Study," Journal of Things, 2020.
+\bibitem{doe2019} A. Doe, "Another Study," 2019.
+\end{thebibliography}
+`
+    const { doc } = parseLatexDocument(latex)
+    expect(doc.content[0].kind).toBe('orderedList')
+    if (doc.content[0].kind === 'orderedList') {
+      expect(doc.content[0].items).toHaveLength(2)
+    }
+  })
+
+  it('drops structural no-op commands instead of leaking literal braces', () => {
+    const latex = String.raw`
+\phantomsection\addcontentsline{toc}{section}{Abstract}
+\tableofcontents
+\pagenumbering{roman}
+Real paragraph text survives.
+`
+    const { doc } = parseLatexDocument(latex)
+    // Only the real paragraph should remain; the noop-only lines are dropped
+    // entirely rather than showing up as stray "{toc}{section}" paragraphs.
+    expect(doc.content).toHaveLength(1)
+    expect(plainText(doc)).toBe('Real paragraph text survives.')
   })
 
   it('escapes and restores special characters', () => {
