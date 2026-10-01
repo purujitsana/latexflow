@@ -85,7 +85,9 @@ hand-written LaTeX using this subset:
 ```
 \section \subsection \subsubsection \paragraph
 \textbf \textit \emph \underline \sout \texttt
-\textsubscript \textsuperscript \hl \href \textcolor
+\textsubscript \textsuperscript \href
+\textcolor[HTML]{...} \colorbox[HTML]{...}  (also plain \textcolor{red}{...};
+    \hl{...} still parses for backward compatibility but is no longer generated)
 \begin{itemize} \begin{enumerate} \item  (one level of nesting, plus a
     \item [$\boxtimes$]/[$\square$] task-checkbox convention)
 \begin{quote}
@@ -97,6 +99,12 @@ hand-written LaTeX using this subset:
 \hrulefill   \newpage \pagebreak \clearpage
 \documentclass \usepackage \title \author \maketitle
 ```
+
+`\usepackage{xcolor}` (for `\textcolor`/`\colorbox`) and `\usepackage{ulem}`
+(for `\sout`) are injected into the exported preamble automatically whenever
+the document actually uses color, highlight, or strikethrough — you don't
+need to add them by hand, and documents saved before this was added will
+pick them up the next time they're exported or synced.
 
 **Unsupported LaTeX is never silently dropped.** A block-level construct the
 parser doesn't recognize (an unknown environment, a malformed block) is

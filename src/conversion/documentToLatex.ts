@@ -7,6 +7,7 @@ import type {
   TableRowNode,
 } from '../types/document'
 import { escapeLatex } from './escapeLatex'
+import { toLatexColorArg } from './latexColor'
 
 export interface DocumentToLatexOptions {
   /** Wrap content in \documentclass/\begin{document}/\end{document}. */
@@ -21,10 +22,21 @@ const MARK_WRAPPERS: Partial<Record<Mark['type'], (body: string, mark: Mark) => 
   code: (body) => `\\texttt{${body}}`,
   subscript: (body) => `\\textsubscript{${body}}`,
   superscript: (body) => `\\textsuperscript{${body}}`,
-  highlight: (body) => `\\hl{${body}}`,
+  // \colorbox (xcolor) rather than \hl (soul): it takes a color argument
+  // directly, matching our per-instance multicolor highlight marks, and
+  // needs no extra package beyond the one \textcolor already requires.
+  highlight: (body, mark) => `\\colorbox${toLatexColorArg(mark.attrs?.color ?? '#fff2a8')}{${body}}`,
   link: (body, mark) => `\\href{${mark.attrs?.href ?? ''}}{${body}}`,
-  color: (body, mark) => `\\textcolor{${mark.attrs?.color ?? 'black'}}{${body}}`,
+  color: (body, mark) => `\\textcolor${toLatexColorArg(mark.attrs?.color ?? 'black')}{${body}}`,
 }
+
+// Packages required by specific generated commands, auto-injected based on
+// what the body actually uses. This also self-heals documents saved before
+// a given mark's package dependency was added to DEFAULT_PREAMBLE.
+const CONDITIONAL_PACKAGES: { test: RegExp; package: string }[] = [
+  { test: /\\textcolor|\\colorbox/, package: 'xcolor' },
+  { test: /\\sout\{/, package: 'ulem' },
+]
 
 // Marks nest deterministically outside-in so the generator is stable across
 // runs (otherwise semantically-identical text could serialize differently
@@ -181,7 +193,9 @@ export function documentToLatex(doc: DocumentModel, options: DocumentToLatexOpti
 
   const { documentClass, documentClassOptions, packages, extra } = doc.preamble
   const opts = documentClassOptions ? `[${documentClassOptions}]` : ''
-  const pkgLines = packages.map((p) => `\\usepackage{${p}}`).join('\n')
+  const requiredPackages = CONDITIONAL_PACKAGES.filter((c) => c.test.test(body)).map((c) => c.package)
+  const allPackages = [...packages, ...requiredPackages.filter((p) => !packages.includes(p))]
+  const pkgLines = allPackages.map((p) => `\\usepackage{${p}}`).join('\n')
   const titleBlock = doc.metadata.title
     ? `\\title{${escapeLatex(doc.metadata.title)}}\n${
         doc.metadata.author ? `\\author{${escapeLatex(doc.metadata.author)}}\n` : ''

@@ -159,7 +159,7 @@ export interface DocumentModel {
 export const DEFAULT_PREAMBLE: LatexPreamble = {
   documentClass: 'article',
   documentClassOptions: '11pt',
-  packages: ['amsmath', 'amssymb', 'graphicx', 'hyperref'],
+  packages: ['amsmath', 'amssymb', 'graphicx', 'hyperref', 'xcolor'],
   extra: '',
 }
 

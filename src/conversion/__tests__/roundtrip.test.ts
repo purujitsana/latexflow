@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { documentToLatex } from '../documentToLatex'
 import { parseLatexDocument } from '../latexParser'
+import { tiptapJsonToModel } from '../tiptapBridge'
 import { createEmptyDocument, type DocumentModel } from '../../types/document'
 
 function docLatexDoc(doc: DocumentModel): DocumentModel {
@@ -142,6 +143,77 @@ describe('document -> latex -> document round trip', () => {
     expect(latex).not.toContain('50%') // % must be escaped
     const back = docLatexDoc(doc)
     expect(plainText(back)).toBe('50% of $100 & #1 rule_here')
+  })
+
+  it('generates valid \\textcolor syntax for hex colors and pulls in xcolor', () => {
+    const doc = createEmptyDocument()
+    doc.content = [{ kind: 'paragraph', content: [{ kind: 'text', text: 'Hi', marks: [{ type: 'color', attrs: { color: '#2f6fed' } }] }] }]
+    const latex = documentToLatex(doc, { fullDocument: true })
+    expect(latex).toContain('\\textcolor[HTML]{2F6FED}{Hi}')
+    expect(latex).not.toContain('\\textcolor{#2f6fed}')
+    expect(latex).toContain('\\usepackage{xcolor}')
+  })
+
+  it('generates \\colorbox (not \\hl) for highlight marks', () => {
+    const doc = createEmptyDocument()
+    doc.content = [{ kind: 'paragraph', content: [{ kind: 'text', text: 'Hi', marks: [{ type: 'highlight', attrs: { color: '#fff2a8' } }] }] }]
+    const latex = documentToLatex(doc, { fullDocument: true })
+    expect(latex).toContain('\\colorbox[HTML]{FFF2A8}{Hi}')
+    expect(latex).not.toContain('\\hl{')
+  })
+
+  it('adds ulem only when strikethrough is actually used', () => {
+    const plain = createEmptyDocument()
+    plain.content = [{ kind: 'paragraph', content: [{ kind: 'text', text: 'Hi' }] }]
+    expect(documentToLatex(plain, { fullDocument: true })).not.toContain('ulem')
+
+    const struck = createEmptyDocument()
+    struck.content = [{ kind: 'paragraph', content: [{ kind: 'text', text: 'Hi', marks: [{ type: 'strike' }] }] }]
+    expect(documentToLatex(struck, { fullDocument: true })).toContain('\\usepackage{ulem}')
+  })
+
+  it('round-trips color and highlight marks through LaTeX and back', () => {
+    const doc = createEmptyDocument()
+    doc.content = [
+      {
+        kind: 'paragraph',
+        content: [
+          { kind: 'text', text: 'Colored', marks: [{ type: 'color', attrs: { color: '#2f6fed' } }] },
+          { kind: 'text', text: ' and ' },
+          { kind: 'text', text: 'highlighted', marks: [{ type: 'highlight', attrs: { color: '#fff2a8' } }] },
+        ],
+      },
+    ]
+    const back = docLatexDoc(doc)
+    const node = back.content[0]
+    expect(node.kind).toBe('paragraph')
+    if (node.kind === 'paragraph') {
+      const colored = node.content.find((n) => n.kind === 'text' && n.text === 'Colored')
+      const highlighted = node.content.find((n) => n.kind === 'text' && n.text === 'highlighted')
+      // LaTeX's [HTML] color model round-trips through uppercase hex digits;
+      // semantically identical to the lowercase input, just normalized.
+      expect(colored?.kind === 'text' && colored.marks?.[0]).toEqual({ type: 'color', attrs: { color: '#2F6FED' } })
+      expect(highlighted?.kind === 'text' && highlighted.marks?.[0]).toEqual({ type: 'highlight', attrs: { color: '#FFF2A8' } })
+    }
+  })
+
+  it('preserves highlight color through the Tiptap JSON bridge (not just LaTeX)', () => {
+    const json = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: 'Hi', marks: [{ type: 'highlight', attrs: { color: '#c9f2c9' } }] }],
+        },
+      ],
+    }
+    const base = createEmptyDocument()
+    const model = tiptapJsonToModel(json, base)
+    const node = model.content[0]
+    expect(node.kind).toBe('paragraph')
+    if (node.kind === 'paragraph' && node.content[0].kind === 'text') {
+      expect(node.content[0].marks?.[0]).toEqual({ type: 'highlight', attrs: { color: '#c9f2c9' } })
+    }
   })
 
   it('never crashes on unknown LaTeX and preserves it verbatim', () => {

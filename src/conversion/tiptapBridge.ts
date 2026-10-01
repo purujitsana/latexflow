@@ -42,7 +42,7 @@ function marksFromTiptap(marks: JSONContent['marks']): Mark[] {
         out.push({ type: 'superscript' })
         break
       case 'highlight':
-        out.push({ type: 'highlight' })
+        out.push({ type: 'highlight', attrs: m.attrs?.color ? { color: m.attrs.color } : undefined })
         break
       case 'link':
         out.push({ type: 'link', attrs: { href: m.attrs?.href } })
@@ -171,6 +171,8 @@ function marksToTiptap(marks: Mark[] | undefined): JSONContent['marks'] {
         return { type: 'link', attrs: { href: m.attrs?.href ?? '' } }
       case 'color':
         return { type: 'textStyle', attrs: { color: m.attrs?.color } }
+      case 'highlight':
+        return { type: 'highlight', attrs: { color: m.attrs?.color } }
       default:
         return { type: m.type }
     }

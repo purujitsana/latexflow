@@ -33,6 +33,9 @@ const COMPLETIONS = [
   'footnote',
   'usepackage',
   'documentclass',
+  'textcolor',
+  'colorbox',
+  'definecolor',
 ]
 
 export function registerLatexLanguage(monaco: Monaco) {

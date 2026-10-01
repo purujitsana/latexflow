@@ -9,6 +9,7 @@ import type {
 } from '../types/document'
 import { createEmptyDocument, DEFAULT_PREAMBLE } from '../types/document'
 import { unescapeLatex } from './escapeLatex'
+import { parseLatexColorArg } from './latexColor'
 
 export interface ParseResult {
   doc: DocumentModel
@@ -131,15 +132,17 @@ export function parseInline(text: string): InlineNode[] {
           }
         }
 
-        if (name === 'textcolor') {
-          const arg1 = text[cursor] === '{' ? extractBraced(text, cursor) : null
-          if (arg1) {
-            const afterArg1 = skipWhitespace(text, arg1.endIndex + 1)
-            const arg2 = text[afterArg1] === '{' ? extractBraced(text, afterArg1) : null
+        if (name === 'textcolor' || name === 'colorbox') {
+          // Both take an optional [HTML]/[rgb]/[RGB] model before the color
+          // argument, then a second brace group with the actual content.
+          const colorSpec = parseLatexColorArg(text, cursor, extractBraced, skipWhitespace)
+          if (colorSpec) {
+            const afterColor = skipWhitespace(text, colorSpec.endIndex + 1)
+            const arg2 = text[afterColor] === '{' ? extractBraced(text, afterColor) : null
             if (arg2) {
               flush()
               const inner = parseInline(arg2.content)
-              const mark: Mark = { type: 'color', attrs: { color: arg1.content } }
+              const mark: Mark = { type: name === 'textcolor' ? 'color' : 'highlight', attrs: { color: colorSpec.color } }
               nodes.push(...inner.map((n) => mergeMark(n, mark)))
               i = arg2.endIndex + 1
               continue

@@ -40,7 +40,7 @@ const DEFAULTS: Omit<SettingsState, 'set' | 'resetDefaults'> = {
   autoSync: true,
   conversionWarnings: true,
   documentClass: 'article',
-  packages: ['amsmath', 'amssymb', 'graphicx', 'hyperref'],
+  packages: ['amsmath', 'amssymb', 'graphicx', 'hyperref', 'xcolor'],
   latexIndent: 4,
   theme: 'light',
   layout: 'split',
